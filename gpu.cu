@@ -1,6 +1,8 @@
 #include "common.h"
 #include <cuda.h>
 
+#include <cuda_runtime.h>
+
 #include <thrust/device_malloc.h>
 #include <thrust/device_free.h>
 #include <thrust/scan.h>
@@ -10,9 +12,6 @@
 #include <algorithm>
 
 #define NUM_THREADS 256
-
-// TODO: fix corner cases
-// TODO: bucket sizes must start with 0
 
 // Put any static global variables here that you will use throughout the simulation.
 int blks;
@@ -69,8 +68,8 @@ __global__ void compute_forces_gpu(particle_t* particles_in_buckets, int num_par
         int bucket_row, bucket_col;
         particle_to_bucket(particles_in_buckets[offset + i], size, bucket_row, bucket_col, grid_side_length);
         
-        for (int bx = std::max(bucket_row-1, 0); bx <= std::min(bucket_row+1, grid_side_length-1); bx ++) {
-            for (int by = std::max(bucket_col-1, 0); by <= std::min(bucket_col+1, grid_side_length-1); by ++) {
+        for (int bx = max(bucket_row-1, 0); bx <= min(bucket_row+1, grid_side_length-1); bx ++) {
+            for (int by = max(bucket_col-1, 0); by <= min(bucket_col+1, grid_side_length-1); by ++) {
                 
                 int neighbor_bucket = bx * grid_side_length + by;
                 
@@ -215,7 +214,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // zero out current sizes
     cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int));
     // compute bucket sizes
-    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, grid_side_length);
+    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length);
     // inclusive scan
     thrust::inclusive_scan(thrust::device_pointer_cast(bucket_sizes), 
                             thrust::device_pointer_cast(bucket_sizes + num_buckets), 
