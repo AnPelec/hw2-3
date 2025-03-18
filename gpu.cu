@@ -215,7 +215,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // zero out current sizes
     cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int));
     // compute bucket sizes
-    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes);
+    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size);
     // inclusive scan
     thrust::inclusive_scan(thrust::device_pointer_cast(bucket_sizes), 
                             thrust::device_pointer_cast(bucket_sizes + num_buckets), 
