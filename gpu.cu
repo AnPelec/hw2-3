@@ -125,7 +125,7 @@ __global__ void move_gpu(particle_t* particles, int num_parts, double size) {
     HELPER FUNCTIONS
 */
 
-__global__ void compute_bucket_sizes(int num_parts, particle_t* particles_in_buckets, int cnt, int* bucket_sizes) { 
+__global__ void compute_bucket_sizes(int num_parts, particle_t* particles_in_buckets, int cnt, int* bucket_sizes, double size) { 
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
@@ -188,7 +188,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // zero out bucket sizes
     cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int));
     // 3a. Compute bucket sizes
-    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes);
+    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size);
     // 3b. Inclusive scan for indices
     thrust::inclusive_scan(thrust::device_pointer_cast(bucket_sizes), 
                             thrust::device_pointer_cast(bucket_sizes + num_buckets), 
