@@ -59,7 +59,7 @@ __global__ void compute_forces_gpu(particle_t* parts, int num_parts, int* partic
     int stride = blockDim.x * gridDim.x;
 
     for (int i = tid; i < num_parts; i += stride) {
-        int particle_index = particles_in_buckets[cnt*num_parts + i];
+        int particle_index = particles_in_buckets[cnt * num_parts + i];
 
         parts[particle_index].ax = parts[particle_index].ay = 0;
 
@@ -184,7 +184,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // I think we can adjust this parameter
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 
-    grid_side_length = std::min(int(size/(2*cutoff)), int(sqrt(num_parts)/10)); // Number of rows/columns in our grid of buckets
+    grid_side_length = std::min(int(size/(2*cutoff)), int(sqrt(num_parts))); // Number of rows/columns in our grid of buckets
     num_buckets = grid_side_length*grid_side_length;
 
     // 1. Allocate space on the GPU
@@ -194,12 +194,20 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     cudaMalloc((void **)&bucket_index, num_buckets * sizeof(int));
 
     // 2. Move particles to the GPU (the first time they point to something empty)
-    cudaMemset(particles_in_buckets, -1, num_buckets * sizeof(int));
+    cudaMemset(particles_in_buckets, -1, num_parts * sizeof(int));
 
     // 3. Initialize the buckets
     cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int)); // zero out bucket sizes
     // 3a. Compute bucket sizes
     compute_bucket_sizes<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length);
+
+    // check for prior error
+    cudaDeviceSynchronize(); 
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error before thrust::inclusive_scan: " << cudaGetErrorString(err) << std::endl;
+    }
+
     // 3b. Inclusive scan for indices
     thrust::device_ptr<int> bucket_sizes_ptr = thrust::device_pointer_cast(bucket_sizes);
     thrust::inclusive_scan(bucket_sizes_ptr,
@@ -238,7 +246,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
 
     // Step 4. Rebucket particles
     rebucket_particles<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length, bucket_index);
-    
+
     // set cnt to 1-cnt
     cnt = 1 - cnt;
 }
