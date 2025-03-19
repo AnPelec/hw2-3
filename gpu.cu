@@ -2,7 +2,6 @@
 #include <cuda.h>
 
 #include <cuda_runtime.h>
-
 #include <thrust/device_malloc.h>
 #include <thrust/device_free.h>
 #include <thrust/scan.h>
@@ -16,15 +15,15 @@
 // Put any static global variables here that you will use throughout the simulation.
 int blks;
 
-static int grid_side_length;
-int num_buckets;
-int* bucket_sizes;             // show where each bucket starts and ends
-int* bucket_index;             // used to place each particle at a unique index in each bucket
+int grid_side_length;       // number of buckets on each side
+int num_buckets;            // total number of buckets
 
-int cnt;                       // which bucket we are populating
-particle_t* particles_in_buckets;       // need two buckets to move from one to the other
-                                        // effectively a 2d array, we will use the first num_parts for one copy,
-                                        // and the second num_parts for a second copy
+int* bucket_sizes;          // show where each bucket starts and ends
+int* bucket_index;          // used to place each particle at a unique index in each bucket
+
+int* particles_in_buckets;  // stores the particle indices according to their buckets
+                            // has size 2 * num_parts since we need extra space for the rebucketing
+int cnt;                    // whether we are using the first or the second half of particles_in_buckets
 
 // This function computes the bucket of a particle
 __device__ void particle_to_bucket(particle_t particle, double size, int grid_side_length, int &bx, int &by) {
@@ -54,19 +53,19 @@ __device__ void apply_force_gpu(particle_t& particle, particle_t& neighbor) {
     particle.ay += coef * dy;
 }
 
-__global__ void compute_forces_gpu(particle_t* particles_in_buckets, int num_parts, double size, int grid_side_length, int cnt, int* bucket_sizes) {
+__global__ void compute_forces_gpu(particle_t* parts, int num_parts, int* particles_in_buckets, double size, int grid_side_length, int cnt, int* bucket_sizes) {
     // Get thread (particle) ID
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
-    int offset = cnt * num_parts;
-
     for (int i = tid; i < num_parts; i += stride) {
-        particles_in_buckets[offset + i].ax = particles_in_buckets[offset + i].ay = 0;
+        int particle_index = particles_in_buckets[cnt*parts + i];
+
+        parts[particle_index].ax = parts[particle_index].ay = 0;
 
         // find nearby buckets
         int bucket_row, bucket_col;
-        particle_to_bucket(particles_in_buckets[offset + i], size, grid_side_length, bucket_row, bucket_col);
+        particle_to_bucket(parts[particle_index], size, grid_side_length, bucket_row, bucket_col);
         
         for (int bx = max(bucket_row-1, 0); bx <= min(bucket_row+1, grid_side_length-1); bx ++) {
             for (int by = max(bucket_col-1, 0); by <= min(bucket_col+1, grid_side_length-1); by ++) {
@@ -82,21 +81,24 @@ __global__ void compute_forces_gpu(particle_t* particles_in_buckets, int num_par
                 end_index = bucket_sizes[neighbor_bucket];
 
                 for (int j = start_index; j < end_index; ++ j) {
-                    apply_force_gpu(particles_in_buckets[offset + i], particles_in_buckets[offset + j]);
+                    int neighbor_index = particles_in_buckets[cnt*parts + i];
+
+                    apply_force_gpu(parts[particle_index], parts[neighbor_index]);
                 }
             }
         }
     }
 }
 
-__global__ void move_gpu(particle_t* particles_in_buckets, int num_parts, double size) {
+__global__ void move_gpu(particle_t* parts, int num_parts, int* particles_in_buckets, double size) {
     // Get thread (particle) ID
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
     for (int i = tid; i < num_parts; i += stride) {
+        int particle_index = particles_in_buckets[cnt*parts + i];
 
-        particle_t* p = &particles_in_buckets[i];
+        particle_t* p = &parts[particle_index];
         //
         //  slightly simplified Velocity Verlet integration
         //  conserves energy better than explicit Euler method
@@ -124,14 +126,19 @@ __global__ void move_gpu(particle_t* particles_in_buckets, int num_parts, double
     HELPER FUNCTIONS
 */
 
-__global__ void compute_bucket_sizes(int num_parts, particle_t* particles_in_buckets, int cnt, int* bucket_sizes, double size, int grid_side_length) { 
+__global__ void compute_bucket_sizes(particle_t* parts, int num_parts, int* particles_in_buckets, int cnt, int* bucket_sizes, double size, int grid_side_length) { 
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
     for (int i = tid; i < num_parts; i += stride) {
+        int particle_index = particles_in_buckets[cnt*parts + i];
+        if (particle_index == -1) { // for the first
+            particle_index = i;
+        }
+
         // compute which bucket you are in
         int bucket_row, bucket_col;
-        particle_to_bucket(particles_in_buckets[cnt*num_parts + i], size, grid_side_length, bucket_row, bucket_col);
+        particle_to_bucket(parts[particle_index], size, grid_side_length, bucket_row, bucket_col);
         int current_bucket = bucket_row * grid_side_length + bucket_col;
 
         // increase the size of this bucket (atomically)
@@ -140,21 +147,26 @@ __global__ void compute_bucket_sizes(int num_parts, particle_t* particles_in_buc
     }
 }
 
-__global__ void rebucket_particles(int num_parts, particle_t* particles_in_buckets, int cnt, int* bucket_sizes, double size, int grid_side_length, int* bucket_index) {
+__global__ void rebucket_particles(particle_t* parts, int num_parts, int* particles_in_buckets, int cnt, int* bucket_sizes, double size, int grid_side_length, int* bucket_index) {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
 
     for (int i = index; i < num_parts; i += stride) {
+        int particle_index = particles_in_buckets[cnt*parts + i];
+        if (particle_index == -1) { // for the first time
+            particle_index = i;
+        }
+
         // compute which bucket you are in
         int bucket_row, bucket_col;
-        particle_to_bucket(particles_in_buckets[cnt*num_parts + i], size, grid_side_length, bucket_row, bucket_col);
+        particle_to_bucket(parts[particle_index], size, grid_side_length, bucket_row, bucket_col);
         int current_bucket = bucket_row * grid_side_length + bucket_col;
 
         // obtain your index in the bucket
         auto particle_index_in_bucket = atomicAdd(bucket_index + current_bucket, 1);
 
         // move to the new bucket
-        particles_in_buckets[(1-cnt)*num_parts + bucket_sizes[current_bucket] + particle_index_in_bucket] = particles_in_buckets[cnt*num_parts + i];
+        particles_in_buckets[(1-cnt)*num_parts + bucket_sizes[current_bucket] + particle_index_in_bucket] = particle_index;
     }
 } 
 
@@ -177,17 +189,17 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 
     // 1. Allocate space on the GPU
     cnt = 0;
-    cudaMalloc((void **)&particles_in_buckets, 2*num_parts*sizeof(particle_t));
+    cudaMalloc((void **)&particles_in_buckets, 2 * num_parts * sizeof(int));
+    cudaMalloc((void **)&bucket_sizes, num_buckets * sizeof(int));
+    cudaMalloc((void **)&bucket_index, num_buckets * sizeof(int));
 
-    cudaMalloc((void **)&bucket_sizes, num_buckets*sizeof(int));
-    cudaMalloc((void **)&bucket_index, num_buckets*sizeof(int));
-    // 2. Move particles to the GPU
-    cudaMemcpy(particles_in_buckets, parts, num_parts*sizeof(particle_t), cudaMemcpyHostToDevice);
+    // 2. Move particles to the GPU (the first time they point to something empty)
+    cudaMemset(particles_in_buckets, -1, num_buckets * sizeof(int));
+
     // 3. Initialize the buckets
-    // zero out bucket sizes
-    cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int));
+    cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int)); // zero out bucket sizes
     // 3a. Compute bucket sizes
-    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length);
+    compute_bucket_sizes<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length);
     // 3b. Inclusive scan for indices
     thrust::device_ptr<int> bucket_sizes_ptr = thrust::device_pointer_cast(bucket_sizes);
     thrust::inclusive_scan(bucket_sizes_ptr,
@@ -196,7 +208,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // 3c. Zero out bucket index
     cudaMemset(bucket_index, 0, num_buckets * sizeof(int));
     // 3d. Move particles to the correct bucket
-    rebucket_particles<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length, bucket_index);
+    rebucket_particles<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length, bucket_index);
     // set cnt to 1-cnt
     cnt = 1 - cnt;
 }
@@ -206,26 +218,27 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // Rewrite this function
 
     // Step 1. Compute forces
-    compute_forces_gpu<<<blks, NUM_THREADS>>>(particles_in_buckets, num_parts, size, grid_side_length, cnt, bucket_sizes);
+    compute_forces_gpu<<<blks, NUM_THREADS>>>(
+        parts, num_parts, particles_in_buckets, size, grid_side_length, cnt, bucket_sizes
+    );
 
     // Step 2. Move particles
-    move_gpu<<<blks, NUM_THREADS>>>(particles_in_buckets, num_parts, size);
+    move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, size);
 
     // Step 3. Compute new bucket sizes
-    // zero out current sizes
-    cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int));
-    // compute bucket sizes
-    compute_bucket_sizes<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length);
+    cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int)); // zero out current sizes
+    compute_bucket_sizes<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length); // actual bucket size computation
     // inclusive scan
     thrust::device_ptr<int> bucket_sizes_ptr = thrust::device_pointer_cast(bucket_sizes);
     thrust::inclusive_scan(bucket_sizes_ptr, 
                            bucket_sizes_ptr + num_buckets, 
                            bucket_sizes_ptr);
-
     // 3c. Zero out bucket index
     cudaMemset(bucket_index, 0, num_buckets * sizeof(int));
+
     // Step 4. Rebucket particles
-    rebucket_particles<<<blks, NUM_THREADS>>>(num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length, bucket_index);
+    rebucket_particles<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length, bucket_index);
+    
     // set cnt to 1-cnt
     cnt = 1 - cnt;
 }
