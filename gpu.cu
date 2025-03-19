@@ -172,7 +172,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     // I think we can adjust this parameter
     blks = (num_parts + NUM_THREADS - 1) / NUM_THREADS;
 
-    grid_side_length = std::min(int(size/(2*cutoff)), int(sqrt(num_parts))); // Number of rows/columns in our grid of buckets
+    grid_side_length = std::min(int(size/(2*cutoff)), int(sqrt(num_parts)/10)); // Number of rows/columns in our grid of buckets
     num_buckets = grid_side_length*grid_side_length;
 
     // 1. Allocate space on the GPU
