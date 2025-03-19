@@ -81,7 +81,7 @@ __global__ void compute_forces_gpu(particle_t* parts, int num_parts, int* partic
                 end_index = bucket_sizes[neighbor_bucket];
 
                 for (int j = start_index; j < end_index; ++ j) {
-                    int neighbor_index = particles_in_buckets[cnt*num_parts + i];
+                    int neighbor_index = particles_in_buckets[cnt*num_parts + j];
 
                     apply_force_gpu(parts[particle_index], parts[neighbor_index]);
                 }
@@ -165,8 +165,13 @@ __global__ void rebucket_particles(particle_t* parts, int num_parts, int* partic
         // obtain your index in the bucket
         auto particle_index_in_bucket = atomicAdd(bucket_index + current_bucket, 1);
 
+        int bucket_offset = 0;
+        if (current_bucket > 0) {
+            bucket_offset = bucket_sizes[current_bucket-1];
+        }
+
         // move to the new bucket
-        particles_in_buckets[(1-cnt)*num_parts + bucket_sizes[current_bucket] + particle_index_in_bucket] = particle_index;
+        particles_in_buckets[(1-cnt)*num_parts + bucket_offset + particle_index_in_bucket] = particle_index;
     }
 } 
 
@@ -200,14 +205,6 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int)); // zero out bucket sizes
     // 3a. Compute bucket sizes
     compute_bucket_sizes<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, cnt, bucket_sizes, size, grid_side_length);
-
-    // check for prior error
-    cudaDeviceSynchronize(); 
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        std::cerr << "CUDA Error before thrust::inclusive_scan: " << cudaGetErrorString(err) << std::endl;
-    }
-
     // 3b. Inclusive scan for indices
     thrust::device_ptr<int> bucket_sizes_ptr = thrust::device_pointer_cast(bucket_sizes);
     thrust::inclusive_scan(bucket_sizes_ptr,
