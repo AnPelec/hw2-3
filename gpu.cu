@@ -59,7 +59,7 @@ __global__ void compute_forces_gpu(particle_t* parts, int num_parts, int* partic
     int stride = blockDim.x * gridDim.x;
 
     for (int i = tid; i < num_parts; i += stride) {
-        int particle_index = particles_in_buckets[cnt*parts + i];
+        int particle_index = particles_in_buckets[cnt*num_parts + i];
 
         parts[particle_index].ax = parts[particle_index].ay = 0;
 
@@ -81,7 +81,7 @@ __global__ void compute_forces_gpu(particle_t* parts, int num_parts, int* partic
                 end_index = bucket_sizes[neighbor_bucket];
 
                 for (int j = start_index; j < end_index; ++ j) {
-                    int neighbor_index = particles_in_buckets[cnt*parts + i];
+                    int neighbor_index = particles_in_buckets[cnt*num_parts + i];
 
                     apply_force_gpu(parts[particle_index], parts[neighbor_index]);
                 }
@@ -90,13 +90,13 @@ __global__ void compute_forces_gpu(particle_t* parts, int num_parts, int* partic
     }
 }
 
-__global__ void move_gpu(particle_t* parts, int num_parts, int* particles_in_buckets, double size) {
+__global__ void move_gpu(particle_t* parts, int num_parts, int* particles_in_buckets, double size, int cnt) {
     // Get thread (particle) ID
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
     int stride = blockDim.x * gridDim.x;
 
     for (int i = tid; i < num_parts; i += stride) {
-        int particle_index = particles_in_buckets[cnt*parts + i];
+        int particle_index = particles_in_buckets[cnt*num_parts + i];
 
         particle_t* p = &parts[particle_index];
         //
@@ -131,7 +131,7 @@ __global__ void compute_bucket_sizes(particle_t* parts, int num_parts, int* part
     int stride = blockDim.x * gridDim.x;
 
     for (int i = tid; i < num_parts; i += stride) {
-        int particle_index = particles_in_buckets[cnt*parts + i];
+        int particle_index = particles_in_buckets[cnt*num_parts + i];
         if (particle_index == -1) { // for the first
             particle_index = i;
         }
@@ -152,7 +152,7 @@ __global__ void rebucket_particles(particle_t* parts, int num_parts, int* partic
     int stride = blockDim.x * gridDim.x;
 
     for (int i = index; i < num_parts; i += stride) {
-        int particle_index = particles_in_buckets[cnt*parts + i];
+        int particle_index = particles_in_buckets[cnt*num_parts + i];
         if (particle_index == -1) { // for the first time
             particle_index = i;
         }
@@ -223,7 +223,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
     );
 
     // Step 2. Move particles
-    move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, size);
+    move_gpu<<<blks, NUM_THREADS>>>(parts, num_parts, particles_in_buckets, size, cnt);
 
     // Step 3. Compute new bucket sizes
     cudaMemset(bucket_sizes, 0, num_buckets * sizeof(int)); // zero out current sizes
