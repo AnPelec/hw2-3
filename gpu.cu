@@ -10,7 +10,7 @@
 
 #include <algorithm>
 
-#define NUM_THREADS 256
+#define NUM_THREADS 1024
 
 // Put any static global variables here that you will use throughout the simulation.
 int blks;
